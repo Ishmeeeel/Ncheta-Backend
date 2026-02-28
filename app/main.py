@@ -22,7 +22,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         settings.frontend_url,          # e.g. http://localhost:3000
-        "https://ncheta.vercel.app",    # Update to your actual Vercel URL
+        "https://ncheta.vercel.app",
+        "http://localhost:3000"    # Update to your actual Vercel URL
         "https://*.vercel.app",         # Vercel preview deployments
     ],
     allow_credentials=True,
