@@ -1,5 +1,5 @@
 """
-Teacher router
+print("===== teacher.py LOADED =====", flush=True)
 --------------
 GET  /teacher/dashboard
 GET  /teacher/lessons
