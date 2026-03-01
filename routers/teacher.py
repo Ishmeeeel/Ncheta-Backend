@@ -1,5 +1,5 @@
 """
-print("===== teacher.py LOADED =====", flush=True)
+Teacher router
 --------------
 GET  /teacher/dashboard
 GET  /teacher/lessons
@@ -50,21 +50,33 @@ def _relative_time(dt_str: str | None) -> str:
 
 def _build_teacher_lesson(row: dict, student_count: int) -> TeacherLesson:
     return TeacherLesson(
-        id               = row["id"],
-        title            = row["title"],
-        subject          = row["subject"],
-        page_count       = row.get("page_count") or 0,
-        icon_emoji       = row.get("icon_emoji") or "📄",
-        is_published     = row.get("is_published", False),
-        processing_status= row.get("processing_status", "pending"),
-        student_count    = student_count,
-        created_at       = row.get("created_at", ""),
+        id                = row["id"],
+        title             = row["title"],
+        subject           = row["subject"],
+        page_count        = row.get("page_count") or 0,
+        icon_emoji        = row.get("icon_emoji") or "📄",
+        is_published      = row.get("is_published", False),
+        processing_status = row.get("processing_status", "pending"),
+        student_count     = student_count,
+        created_at        = row.get("created_at", ""),
     )
 
 
 def _gen_temp_password(length: int = 12) -> str:
     chars = string.ascii_letters + string.digits + "!@#$"
     return "".join(secrets.choice(chars) for _ in range(length))
+
+
+def _unwrap_acc(s: dict) -> dict:
+    """
+    Supabase returns related rows as a list even when there is only one row.
+    This helper safely unwraps student_accessibility into a plain dict
+    so we can call .get() on it without crashing.
+    """
+    acc = s.get("student_accessibility") or {}
+    if isinstance(acc, list):
+        acc = acc[0] if acc else {}
+    return acc
 
 
 # ── GET /teacher/dashboard ────────────────────────────────────────────────
@@ -120,18 +132,17 @@ async def teacher_dashboard(teacher: Annotated[dict, Depends(require_teacher)]):
 
     total_completions = sum(1 for p in all_progress if p["is_completed"])
 
-    # Students who need attention (progress < 30% in any lesson and has accessed it)
+    # Students who have never been active need attention
+    # Uses _unwrap_acc to safely handle Supabase returning a list
     need_attention = sum(
         1 for s in students_resp
-        if not (s.get("student_accessibility") or {}).get("last_active_at")
+        if not _unwrap_acc(s).get("last_active_at")
     )
 
     # Recent students list
     recent_students: list[StudentSummary] = []
     for s in students_resp[:10]:
-        acc = s.get("student_accessibility") or {}
-        if isinstance(acc, list):
-            acc = acc[0] if acc else {}
+        acc = _unwrap_acc(s)
         recent_students.append(StudentSummary(
             id          = s["id"],
             name        = s["name"],
@@ -145,9 +156,7 @@ async def teacher_dashboard(teacher: Annotated[dict, Depends(require_teacher)]):
     # Profile breakdown
     profile_counts: dict[str, int] = {}
     for s in students_resp:
-        acc = s.get("student_accessibility") or {}
-        if isinstance(acc, list):
-            acc = acc[0] if acc else {}
+        acc     = _unwrap_acc(s)
         profile = acc.get("disability_profile", "visual")
         profile_counts[profile] = profile_counts.get(profile, 0) + 1
     profile_breakdown = [{"profile": k, "count": v} for k, v in profile_counts.items()]
@@ -156,14 +165,14 @@ async def teacher_dashboard(teacher: Annotated[dict, Depends(require_teacher)]):
 
     return TeacherDashboard(
         stats={
-            "total_students":  len(students_resp),
-            "total_lessons":   len(lessons_resp),
-            "completions":     total_completions,
-            "need_attention":  need_attention,
+            "total_students": len(students_resp),
+            "total_lessons":  len(lessons_resp),
+            "completions":    total_completions,
+            "need_attention": need_attention,
         },
-        recent_students=recent_students,
-        profile_breakdown=profile_breakdown,
-        top_lessons=top_lessons,
+        recent_students   = recent_students,
+        profile_breakdown = profile_breakdown,
+        top_lessons       = top_lessons,
     )
 
 
@@ -205,11 +214,11 @@ async def teacher_lessons(teacher: Annotated[dict, Depends(require_teacher)]):
 @router.post("/lessons", response_model=UploadResponse, status_code=202)
 async def upload_lesson(
     background_tasks: BackgroundTasks,
-    teacher:  Annotated[dict, Depends(require_teacher)],
-    file:     UploadFile = File(...),
-    title:    str        = Form(...),
-    subject:  str        = Form(...),
-    assign_to: str       = Form(""),   # comma-separated student UUIDs
+    teacher:   Annotated[dict, Depends(require_teacher)],
+    file:      UploadFile = File(...),
+    title:     str        = Form(...),
+    subject:   str        = Form(...),
+    assign_to: str        = Form(""),   # comma-separated student UUIDs
 ):
     sb        = get_service_client()
     tid       = teacher["id"]
@@ -237,14 +246,14 @@ async def upload_lesson(
     lesson_row = (
         sb.table("lessons")
         .insert({
-            "title":               title,
-            "subject":             subject,
-            "teacher_id":          tid,
-            "school_id":           school_id,
-            "original_file_path":  storage_path,
-            "original_file_name":  fname,
-            "file_type":           ext,
-            "processing_status":   "pending",
+            "title":              title,
+            "subject":            subject,
+            "teacher_id":         tid,
+            "school_id":          school_id,
+            "original_file_path": storage_path,
+            "original_file_name": fname,
+            "file_type":          ext,
+            "processing_status":  "pending",
         })
         .execute()
     ).data[0]
@@ -263,9 +272,9 @@ async def upload_lesson(
     # Kick off background processing
     background_tasks.add_task(
         process_lesson_pipeline,
-        lesson_id=lesson_id,
-        file_bytes=file_bytes,
-        file_type=ext,
+        lesson_id  = lesson_id,
+        file_bytes = file_bytes,
+        file_type  = ext,
     )
 
     return UploadResponse(lesson_id=lesson_id)
@@ -363,9 +372,7 @@ async def teacher_students(teacher: Annotated[dict, Depends(require_teacher)]):
 
     result = []
     for s in students:
-        acc = s.get("student_accessibility") or {}
-        if isinstance(acc, list):
-            acc = acc[0] if acc else {}
+        acc = _unwrap_acc(s)
         result.append(StudentSummary(
             id          = s["id"],
             name        = s["name"],
@@ -385,15 +392,6 @@ async def create_student(
     body:    CreateStudentRequest,
     teacher: Annotated[dict, Depends(require_teacher)],
 ):
-    # ========== DEBUG PRINTS ==========
-    print("=== DEBUG START ===", flush=True)
-    print(f"Full body received: {body.dict()}", flush=True)
-    print(f"disability_profile: {body.disability_profile}", flush=True)
-    print(f"profile: {body.profile}", flush=True)
-    print(f"language: {body.language}", flush=True)
-    print("=== DEBUG END ===", flush=True)
-    # =================================
-
     sb        = get_service_client()
     school_id = teacher.get("school_id")
     if not school_id:
@@ -418,37 +416,21 @@ async def create_student(
 
     # Insert public.users
     sb.table("users").insert(
-        {"id": uid, "name": body.name, "email": body.email, "role": "student", "school_id": school_id}
-    ).execute()
-
-    # Insert student_accessibility
-    sb.table("student_accessibility").insert(
         {
-            "user_id":            uid,
-            "disability_profile": body.disability_profile,
-            "language":           body.language,
-            "onboarding_complete": True,   # teacher pre-configured
+            "id":        uid,
+            "name":      body.name,
+            "email":     body.email,
+            "role":      "student",
+            "school_id": school_id,
         }
     ).execute()
 
-    return CreateStudentResponse(
-        student=StudentSummary(
-            id          = uid,
-            name        = body.name,
-            profile     = body.disability_profile,
-            lessons     = 0,
-            progress    = 0,
-            last_active = "Just added",
-            status      = "active",
-        ),
-        temp_password=temp_password,
-    )
     # Insert student_accessibility
     sb.table("student_accessibility").insert(
         {
-            "user_id":            uid,
-            "disability_profile": body.disability_profile,
-            "language":           body.language,
+            "user_id":             uid,
+            "disability_profile":  body.disability_profile,
+            "language":            body.language,
             "onboarding_complete": True,   # teacher pre-configured
         }
     ).execute()
@@ -516,35 +498,37 @@ async def student_detail(
         teacher_user = lesson.get("users") or {}
         teacher_name = teacher_user.get("name", "Teacher") if isinstance(teacher_user, dict) else "Teacher"
         prog = prog_map.get(lesson["id"])
-        pct  = min(100, round(((prog or {}).get("current_page", 1) / max(1, lesson.get("page_count") or 1)) * 100))
+        pct  = min(100, round(
+            ((prog or {}).get("current_page", 1) / max(1, lesson.get("page_count") or 1)) * 100
+        ))
         lesson_progress.append(LessonSummary(
-            id              = lesson["id"],
-            title           = lesson["title"],
-            subject         = lesson["subject"],
-            page_count      = lesson.get("page_count") or 1,
-            icon_emoji      = lesson.get("icon_emoji") or "📄",
-            teacher_name    = teacher_name,
-            progress_percent= pct,
-            current_page    = (prog or {}).get("current_page", 1),
-            is_completed    = (prog or {}).get("is_completed", False),
+            id               = lesson["id"],
+            title            = lesson["title"],
+            subject          = lesson["subject"],
+            page_count       = lesson.get("page_count") or 1,
+            icon_emoji       = lesson.get("icon_emoji") or "📄",
+            teacher_name     = teacher_name,
+            progress_percent = pct,
+            current_page     = (prog or {}).get("current_page", 1),
+            is_completed     = (prog or {}).get("is_completed", False),
         ))
 
-    total    = len(lesson_progress)
-    overall  = round(sum(l.progress_percent for l in lesson_progress) / total) if total else 0
+    total   = len(lesson_progress)
+    overall = round(sum(l.progress_percent for l in lesson_progress) / total) if total else 0
 
     return StudentDetail(
-        id            = student["id"],
-        name          = student["name"],
-        profile       = acc.get("disability_profile", "visual"),
-        language      = acc.get("language", "english"),
-        progress      = overall,
-        lessons       = total,
-        status        = "active" if student.get("is_active") else "inactive",
-        last_active   = _relative_time(acc.get("last_active_at")),
+        id              = student["id"],
+        name            = student["name"],
+        profile         = acc.get("disability_profile", "visual"),
+        language        = acc.get("language", "english"),
+        progress        = overall,
+        lessons         = total,
+        status          = "active" if student.get("is_active") else "inactive",
+        last_active     = _relative_time(acc.get("last_active_at")),
         lesson_progress = lesson_progress,
-        font_size     = acc.get("font_size", "large"),
-        voice_speed   = acc.get("voice_speed", "normal"),
-        high_contrast = acc.get("high_contrast", True),
+        font_size       = acc.get("font_size", "large"),
+        voice_speed     = acc.get("voice_speed", "normal"),
+        high_contrast   = acc.get("high_contrast", True),
     )
 
 
@@ -560,7 +544,11 @@ async def save_note(
     tid = teacher["id"]
 
     sb.table("teacher_notes").upsert(
-        {"teacher_id": tid, "student_id": student_id, "note_text": body.note_text},
+        {
+            "teacher_id": tid,
+            "student_id": student_id,
+            "note_text":  body.note_text,
+        },
         on_conflict="teacher_id,student_id",
     ).execute()
 
