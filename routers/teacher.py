@@ -406,7 +406,7 @@ async def create_student(
         raise HTTPException(409, f"Could not create student account: {exc}") from exc
 
     uid = auth_resp.user.id
-
+    print(f"DEBUG - disability_profile value: {body.disability_profile}")
     # Insert public.users
     sb.table("users").insert(
         {"id": uid, "name": body.name, "email": body.email, "role": "student", "school_id": school_id}
