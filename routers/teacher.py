@@ -385,6 +385,15 @@ async def create_student(
     body:    CreateStudentRequest,
     teacher: Annotated[dict, Depends(require_teacher)],
 ):
+    # ========== DEBUG PRINTS ==========
+    print("=== DEBUG START ===", flush=True)
+    print(f"Full body received: {body.dict()}", flush=True)
+    print(f"disability_profile: {body.disability_profile}", flush=True)
+    print(f"profile: {body.profile}", flush=True)
+    print(f"language: {body.language}", flush=True)
+    print("=== DEBUG END ===", flush=True)
+    # =================================
+
     sb        = get_service_client()
     school_id = teacher.get("school_id")
     if not school_id:
@@ -406,12 +415,34 @@ async def create_student(
         raise HTTPException(409, f"Could not create student account: {exc}") from exc
 
     uid = auth_resp.user.id
-    print(f"DEBUG - disability_profile value: {body.disability_profile}")
+
     # Insert public.users
     sb.table("users").insert(
         {"id": uid, "name": body.name, "email": body.email, "role": "student", "school_id": school_id}
     ).execute()
 
+    # Insert student_accessibility
+    sb.table("student_accessibility").insert(
+        {
+            "user_id":            uid,
+            "disability_profile": body.disability_profile,
+            "language":           body.language,
+            "onboarding_complete": True,   # teacher pre-configured
+        }
+    ).execute()
+
+    return CreateStudentResponse(
+        student=StudentSummary(
+            id          = uid,
+            name        = body.name,
+            profile     = body.disability_profile,
+            lessons     = 0,
+            progress    = 0,
+            last_active = "Just added",
+            status      = "active",
+        ),
+        temp_password=temp_password,
+    )
     # Insert student_accessibility
     sb.table("student_accessibility").insert(
         {
